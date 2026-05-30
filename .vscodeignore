@@ -1,27 +1,30 @@
-
-.vscode/**
-.vscode-test/**
-test/**
-tests/**
-__tests__/**
-coverage/**
-node_modules/**
-.git/**
-.DS_Store
-.env
-.idea/**
-.history/**
+# Source & build tooling
 src/**
 **/*.ts
 **/*.map
 tsconfig.json
 eslint.config.mjs
+
+# Tests
+test/**
+tests/**
+__tests__/**
+out/test/**
+coverage/**
+.vscode-test/**
+.vscode-test.mjs
+
+# Editor / VCS / misc
+.vscode/**
+.git/**
 .gitignore
+.github/**
+.DS_Store
+.env
+.idea/**
+.history/**
 .yarnrc
 vsc-extension-quickstart.md
-CHANGELOG.md
 
-!out/**
-!package.json
-!README.md
-!LICENSE
+# Ship: package.json, README.md, README.zh-CN.md, CHANGELOG.md,
+# CHANGELOG.zh-CN.md, LICENSE, out/extension.js (everything not ignored above).

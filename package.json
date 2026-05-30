@@ -2,7 +2,7 @@
   "name": "python-reference-counter",
   "displayName": "Python Reference Counter",
   "description": "Show Python function / method / class reference counts via CodeLens (PyCharm style).",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "publisher": "maxim-lapan",
   "engines": {
     "vscode": "^1.102.0"
@@ -19,7 +19,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/maxim-lapan/python-reference-counter"
+    "url": "https://github.com/mxlapan/python-reference-counter"
   },
   "activationEvents": [
     "onLanguage:python"
@@ -34,25 +34,25 @@
           "default": true,
           "description": "Show CodeLens even when there are zero references"
         },
-        "pythonReferenceCounter.includeDefinition": {
-          "type": "boolean",
-          "default": false,
-          "description": "Include the definition itself in the reference count"
-        },
-        "pythonReferenceCounter.enableForClasses": {
-          "type": "boolean",
-          "default": true,
-          "description": "Enable reference counting for class definitions"
-        },
-        "pythonReferenceCounter.enableForFunctions": {
-          "type": "boolean",
-          "default": true,
-          "description": "Enable reference counting for function definitions"
+        "pythonReferenceCounter.enableFor": {
+          "type": "string",
+          "enum": [
+            "both",
+            "classes",
+            "functions"
+          ],
+          "enumDescriptions": [
+            "Count references for both classes and functions/methods",
+            "Count references for class definitions only",
+            "Count references for functions and methods only"
+          ],
+          "default": "both",
+          "description": "Which Python symbols to show reference counts for"
         },
         "pythonReferenceCounter.enableFallbackWorkspaceScan": {
           "type": "boolean",
           "default": true,
-          "description": "When language server returns only local references, perform a naive workspace-wide text scan (may be slower / include false positives)."
+          "description": "Safety net for when no Python language server resolves a symbol (e.g. the Python/Pylance extension is missing or still indexing): perform a naive workspace-wide text scan. Slower and may include false positives. When a language server returns results, those are always used and this scan is skipped."
         }
       }
     }
@@ -73,10 +73,14 @@
     "@typescript-eslint/parser": "^8.31.1",
     "@vscode/test-cli": "^0.0.11",
     "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.9.1",
     "eslint": "^9.25.1",
     "typescript": "^5.8.3"
   },
-  "dependencies": {
-    "@vscode/vsce": "^3.6.0"
+  "comment:overrides": "Pin patched transitive versions of dev/build tooling deps. minimatch is intentionally NOT overridden: @vscode/vsce needs minimatch ^3.0.3 (default-export API), and the ReDoS fix was backported to 3.1.5, which resolves naturally.",
+  "overrides": {
+    "brace-expansion": "^2.0.3",
+    "diff": "^8.0.3",
+    "serialize-javascript": "^7.0.5"
   }
 }
