@@ -7,6 +7,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres (as applicable) to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.1] - 2026-07-11
+### Fixed
+- Explorer file tree no longer flickers on WSL/macOS. The no-server fallback used to open every workspace `.py` file, once per symbol, and it fired while a real language server (Pylance) was merely still indexing (reference queries momentarily return empty). It now runs only when there is genuinely no Python language server installed, reads file bytes via `fs.readFile` instead of opening documents, and shares a short-lived scan across a file's symbols
+- Inaccurate counts while a language server is indexing. Present-but-not-yet-ready servers no longer fall through to the over-counting regex text scan; the count is left uncached and a bounded re-resolve corrects it automatically once indexing finishes (no manual edit needed)
+- Refresh CodeLenses when a Python language server is enabled/disabled after activation, so counts upgrade to (or fall back from) semantic results automatically
+
 ## [2.0.0] - 2026-05-30
 ### Added
 - `pythonReferenceCounter.enableFallbackWorkspaceScan` setting (default `true`) to control the no-language-server text-scan safety net
@@ -46,5 +52,6 @@ and this project adheres (as applicable) to [Semantic Versioning](https://semver
 
 ---
 
+[2.0.1]: https://github.com/maxim-lapan/python-reference-counter/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/maxim-lapan/python-reference-counter/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/maxim-lapan/python-reference-counter/releases/tag/v1.0.0

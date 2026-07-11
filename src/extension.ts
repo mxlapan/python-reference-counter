@@ -47,15 +47,49 @@ export class PythonReferenceProvider implements vscode.CodeLensProvider {
   // invalidated automatically on edits and explicitly on settings changes.
   private readonly resolveCache = new Map<string, ResolveCacheEntry>();
 
+  // Short-lived, shared cache of the workspace text scan used by the no-server
+  // fallback. A single file has many symbols, and each resolves independently;
+  // without this cache every symbol would re-scan (and re-open) the whole
+  // workspace, which is what made the file tree flicker on WSL/macOS.
+  private fileScanCache: { at: number; files: { uri: vscode.Uri; text: string }[] } | null = null;
+  private fileScanInFlight: Promise<{ uri: vscode.Uri; text: string }[]> | null = null;
+  private static readonly SCAN_TTL_MS = 5000;
+
+  // Bounded re-resolve used while a language server is present but still
+  // indexing (references momentarily come back empty). Lets the count correct
+  // itself once indexing finishes without requiring the user to edit the file.
+  private retryTimer: ReturnType<typeof setTimeout> | undefined;
+  private retryAttempts = 0;
+  private static readonly MAX_SERVER_RETRIES = 8;
+  private static readonly SERVER_RETRY_MS = 2000;
+
   /** Ask VS Code to re-resolve all CodeLenses (e.g. after a settings change). */
   public refresh(): void {
     this.resolveCache.clear();
+    this.fileScanCache = null;
+    this.retryAttempts = 0;
+    if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = undefined; }
     this._onDidChangeCodeLenses.fire();
   }
 
   public dispose(): void {
     this._onDidChangeCodeLenses.dispose();
     this.resolveCache.clear();
+    this.fileScanCache = null;
+    if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = undefined; }
+  }
+
+  // Schedule one bounded re-resolve. Genuinely zero-reference symbols never get
+  // here (a working server returns at least the declaration), so the retry
+  // budget can only be spent while indexing is in progress.
+  private scheduleServerRetry(): void {
+    if (this.retryTimer || this.retryAttempts >= PythonReferenceProvider.MAX_SERVER_RETRIES) { return; }
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = undefined;
+      this.retryAttempts++;
+      this.resolveCache.clear();
+      this._onDidChangeCodeLenses.fire();
+    }, PythonReferenceProvider.SERVER_RETRY_MS);
   }
 
   public async provideCodeLenses(document: vscode.TextDocument, token: vscode.CancellationToken): Promise<vscode.CodeLens[]> {
@@ -239,6 +273,16 @@ export class PythonReferenceProvider implements vscode.CodeLensProvider {
       // declaration, so a non-empty result means references were resolved
       // semantically and should be trusted as-is — no expensive text scan.
       const languageServerResolved = locations.length > 0;
+
+      // Is a semantic Python server in play? Either this lens came from the
+      // document-symbol provider, or a server extension is installed (it may
+      // still be indexing, in which case reference queries momentarily return
+      // empty). In BOTH cases we must not run the naive text scan: it opens
+      // every workspace file — churning the file tree, seen as Explorer flicker
+      // on WSL/macOS — and over-counts occurrences in strings, comments, and
+      // unrelated same-named symbols.
+      const serverPresent = codeLens.semantic || hasPythonLanguageServer();
+
       let refs = this.dedupe(locations);
 
       // Trust semantic references; only post-filter the heuristic regex path.
@@ -250,11 +294,11 @@ export class PythonReferenceProvider implements vscode.CodeLensProvider {
       // convention used by PyCharm and VS Code's own reference CodeLens).
       refs = refs.filter(loc => !this.isDefinitionLocation(loc, codeLens));
 
-      // Fallback only when no language server resolved the symbol at all (no
-      // Python extension installed, or it has not indexed yet). This avoids
-      // opening the whole workspace — and the false positives that come with a
-      // naive text scan — whenever a real server is doing the work.
-      if (enableFallback && !languageServerResolved && !token.isCancellationRequested) {
+      // Fallback only when there is genuinely no language server (no Python
+      // extension installed). A present-but-indexing server is handled by the
+      // retry path below instead, so we never fall back to the noisy text scan
+      // while a real server is (or will shortly be) doing the work.
+      if (enableFallback && !serverPresent && !languageServerResolved && !token.isCancellationRequested) {
         try {
           const fallbackRefs = await this.fallbackWorkspaceSearch(codeLens, token);
           if (fallbackRefs.length > refs.length) {
@@ -265,9 +309,15 @@ export class PythonReferenceProvider implements vscode.CodeLensProvider {
         }
       }
 
+      // Server installed but nothing resolved yet → still indexing. Show a
+      // best-effort count now, but don't cache it, and schedule a bounded
+      // re-resolve so the number becomes accurate once indexing completes.
+      const notReady = serverPresent && !languageServerResolved;
+      if (notReady) { this.scheduleServerRetry(); } else { this.retryAttempts = 0; }
+
       const count = refs.length;
       if (!showZero && count === 0) {
-        this.setCachedCommand(codeLens.uri, posKey, null);
+        if (!notReady) { this.setCachedCommand(codeLens.uri, posKey, null); }
         return codeLens;
       }
 
@@ -277,7 +327,7 @@ export class PythonReferenceProvider implements vscode.CodeLensProvider {
         arguments: [codeLens.uri, codeLens.range.start, refs]
       };
       codeLens.command = command;
-      this.setCachedCommand(codeLens.uri, posKey, command);
+      if (!notReady) { this.setCachedCommand(codeLens.uri, posKey, command); }
     } catch (err) {
       this.logDebug('resolve error', err);
       // Provide a valid (no-op) command so clicking the lens doesn't error.
@@ -370,49 +420,80 @@ export class PythonReferenceProvider implements vscode.CodeLensProvider {
     return true;
   }
 
-  // Naive workspace-wide text search, used only when the official reference
-  // provider yields no (or only local) results. Regex-based, so it may over-count
-  // in strings; it does skip obvious line comments. Uses stable findFiles APIs.
+  // Naive workspace-wide text search, used only when there is genuinely no
+  // language server. Regex-based, so it may over-count in strings; it does skip
+  // obvious line comments. Reads file bytes via `fs.readFile` (rather than
+  // opening documents) so it never churns the editor/file tree, and shares a
+  // short-lived scan across the many symbols of a single file.
   private async fallbackWorkspaceSearch(lens: PythonSymbolCodeLens, token: vscode.CancellationToken): Promise<vscode.Location[]> {
     const results: vscode.Location[] = [];
-    const exclude = '**/{.venv,venv,site-packages,dist,build,__pycache__,node_modules,.git}/**';
-    const files = await vscode.workspace.findFiles('**/*.py', exclude);
+    const files = await this.loadWorkspacePythonFiles(token);
     if (token.isCancellationRequested) { return results; }
 
     const escaped = lens.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const wordRe = new RegExp(`\\b${escaped}\\b`, 'g');
 
-    for (const uri of files) {
+    for (const { uri, text } of files) {
       if (token.isCancellationRequested) { break; }
-      let doc: vscode.TextDocument;
-      try {
-        doc = await vscode.workspace.openTextDocument(uri);
-      } catch {
-        continue;
-      }
       const sameFile = uri.toString() === lens.uri.toString();
-      const text = doc.getText();
-      wordRe.lastIndex = 0;
-      let match: RegExpExecArray | null;
-      while ((match = wordRe.exec(text)) !== null) {
-        const start = doc.positionAt(match.index);
-        const lineText = doc.lineAt(start.line).text;
-        const before = lineText.slice(0, start.character);
+      const lines = text.split(/\r?\n/);
+      for (let ln = 0; ln < lines.length; ln++) {
+        const lineText = lines[ln];
+        wordRe.lastIndex = 0;
+        let match: RegExpExecArray | null;
+        while ((match = wordRe.exec(lineText)) !== null) {
+          const ch = match.index;
+          const before = lineText.slice(0, ch);
 
-        // Skip occurrences that appear after a `#` comment marker on the line.
-        if (before.includes('#')) { continue; }
-        // Never count the definition itself.
-        if (sameFile && start.isEqual(lens.range.start)) { continue; }
-        if (this.isDefinitionOf(before, lineText, start.character, lens.name)) { continue; }
-        if (lens.kind === 'method' && !this.isValidMethodReference(lineText, start.character, lens.name)) {
-          continue;
+          // Skip occurrences that appear after a `#` comment marker on the line.
+          if (before.includes('#')) { continue; }
+          // Never count the definition itself.
+          if (sameFile && ln === lens.range.start.line && ch === lens.range.start.character) { continue; }
+          if (this.isDefinitionOf(before, lineText, ch, lens.name)) { continue; }
+          if (lens.kind === 'method' && !this.isValidMethodReference(lineText, ch, lens.name)) {
+            continue;
+          }
+
+          const range = new vscode.Range(new vscode.Position(ln, ch), new vscode.Position(ln, ch + lens.name.length));
+          results.push(new vscode.Location(uri, range));
         }
-
-        const end = new vscode.Position(start.line, start.character + lens.name.length);
-        results.push(new vscode.Location(uri, new vscode.Range(start, end)));
       }
     }
     return this.dedupe(results);
+  }
+
+  // Load (and briefly cache) the text of every workspace `.py` file. Concurrent
+  // callers share a single in-flight scan; results are reused for a short TTL so
+  // a burst of symbol resolves in one file scans the workspace only once.
+  private async loadWorkspacePythonFiles(token: vscode.CancellationToken): Promise<{ uri: vscode.Uri; text: string }[]> {
+    const now = Date.now();
+    if (this.fileScanCache && now - this.fileScanCache.at < PythonReferenceProvider.SCAN_TTL_MS) {
+      return this.fileScanCache.files;
+    }
+    if (this.fileScanInFlight) { return this.fileScanInFlight; }
+
+    this.fileScanInFlight = (async () => {
+      const exclude = '**/{.venv,venv,site-packages,dist,build,__pycache__,node_modules,.git}/**';
+      const uris = await vscode.workspace.findFiles('**/*.py', exclude);
+      const files: { uri: vscode.Uri; text: string }[] = [];
+      for (const uri of uris) {
+        if (token.isCancellationRequested) { break; }
+        try {
+          const bytes = await vscode.workspace.fs.readFile(uri);
+          files.push({ uri, text: Buffer.from(bytes).toString('utf8') });
+        } catch {
+          // Unreadable file — skip it.
+        }
+      }
+      this.fileScanCache = { at: Date.now(), files };
+      return files;
+    })();
+
+    try {
+      return await this.fileScanInFlight;
+    } finally {
+      this.fileScanInFlight = null;
+    }
   }
 
   // True when the name at this position is the symbol being *defined* on the line
@@ -454,27 +535,33 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // Refresh when a Python language server appears (installed/enabled later), so
+  // counts upgrade from the text-scan fallback to semantic results, and the
+  // fallback stops running, automatically.
+  let hadServer = hasPythonLanguageServer();
+  context.subscriptions.push(
+    vscode.extensions.onDidChange(() => {
+      const nowHasServer = hasPythonLanguageServer();
+      if (nowHasServer !== hadServer) {
+        hadServer = nowHasServer;
+        provider.refresh();
+      }
+    })
+  );
+
   // A semantic server (Pylance) makes counts accurate and avoids the slow text
   // scan, so nudge — once — toward installing it when none is present.
-  maybeRecommendPythonServer(context, provider);
+  maybeRecommendPythonServer(context);
 }
 
 function hasPythonLanguageServer(): boolean {
   return PYTHON_SERVER_EXTENSIONS.some(id => vscode.extensions.getExtension(id) !== undefined);
 }
 
-async function maybeRecommendPythonServer(context: vscode.ExtensionContext, provider: PythonReferenceProvider): Promise<void> {
+async function maybeRecommendPythonServer(context: vscode.ExtensionContext): Promise<void> {
   if (hasPythonLanguageServer() || context.globalState.get<boolean>(SERVER_HINT_DISMISSED_KEY)) {
     return;
   }
-
-  // Re-check once new extensions finish loading, then refresh lenses so counts
-  // upgrade to semantic results automatically if a server appears.
-  context.subscriptions.push(
-    vscode.extensions.onDidChange(() => {
-      if (hasPythonLanguageServer()) { provider.refresh(); }
-    })
-  );
 
   const install = 'Install Python extension';
   const dontShow = "Don't show again";

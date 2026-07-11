@@ -7,6 +7,12 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/),
 并(在适用范围内)遵循 [语义化版本](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [2.0.1] - 2026-07-11
+### 修复
+- 修复 WSL/macOS 下左侧文件资源管理器快速闪动的问题。此前"无语言服务器兜底扫描"会对工作区每个 `.py` 文件、且每个符号都各扫一遍并打开文档；同时它在语言服务器(Pylance)仍在建立索引(引用查询会短暂返回空)时也会触发。现在仅在确实没有安装 Python 语言服务器时才扫描，改用 `fs.readFile` 读取字节而非打开文档，并在同一文件的多个符号间共享一次短时缓存的扫描
+- 修复语言服务器索引期间计数不准的问题。已安装但尚未就绪的服务器不再回退到会高估的正则文本扫描；此时计数不写入缓存，并安排有上限的重新解析，在索引完成后自动纠正(无需手动编辑文件)
+- 当激活后启用/禁用 Python 语言服务器时刷新 CodeLens，使计数自动升级为语义结果(或回退)
+
 ## [2.0.0] - 2026-05-30
 ### 新增
 - 新增 `pythonReferenceCounter.enableFallbackWorkspaceScan` 设置(默认 `true`),用于控制"无语言服务器时的文本扫描兜底"
@@ -46,5 +52,6 @@
 
 ---
 
+[2.0.1]: https://github.com/maxim-lapan/python-reference-counter/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/maxim-lapan/python-reference-counter/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/maxim-lapan/python-reference-counter/releases/tag/v1.0.0
