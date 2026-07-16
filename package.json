@@ -2,7 +2,7 @@
   "name": "python-reference-counter",
   "displayName": "Python Reference Counter",
   "description": "Show Python function / method / class reference counts via CodeLens (PyCharm style).",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "publisher": "maxim-lapan",
   "engines": {
     "vscode": "^1.102.0"

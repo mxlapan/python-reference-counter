@@ -7,6 +7,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres (as applicable) to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.2] - 2026-07-16
+### Fixed
+- CodeLens counts no longer flicker (0 → N → 0 → N) when a file is first opened while the language server is still indexing. The bounded re-resolve used to clear the whole resolve cache on every retry, forcing already-correct counts to re-query mid-indexing and momentarily drop back to 0; retries now re-resolve only the still-pending symbols, so a count that has been shown never regresses
+- While indexing, unresolved symbols now show a neutral "…" placeholder instead of a misleading "0 references"; the real count fills in once the server responds
+- Once indexing settles (every pending symbol has resolved), a one-shot verification pass re-resolves all cached counts against the complete index, so values captured from a partially built index are corrected to their final accurate ones
+
 ## [2.0.1] - 2026-07-11
 ### Fixed
 - Explorer file tree no longer flickers on WSL/macOS. The no-server fallback used to open every workspace `.py` file, once per symbol, and it fired while a real language server (Pylance) was merely still indexing (reference queries momentarily return empty). It now runs only when there is genuinely no Python language server installed, reads file bytes via `fs.readFile` instead of opening documents, and shares a short-lived scan across a file's symbols
@@ -52,6 +58,7 @@ and this project adheres (as applicable) to [Semantic Versioning](https://semver
 
 ---
 
-[2.0.1]: https://github.com/maxim-lapan/python-reference-counter/compare/v2.0.0...v2.0.1
-[2.0.0]: https://github.com/maxim-lapan/python-reference-counter/compare/v1.0.0...v2.0.0
-[1.0.0]: https://github.com/maxim-lapan/python-reference-counter/releases/tag/v1.0.0
+[2.0.2]: https://github.com/mxlapan/python-reference-counter/compare/v2.0.1...v2.0.2
+[2.0.1]: https://github.com/mxlapan/python-reference-counter/compare/v2.0.0...v2.0.1
+[2.0.0]: https://github.com/mxlapan/python-reference-counter/compare/v1.0.0...v2.0.0
+[1.0.0]: https://github.com/mxlapan/python-reference-counter/releases/tag/v1.0.0

@@ -7,6 +7,12 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/),
 并(在适用范围内)遵循 [语义化版本](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [2.0.2] - 2026-07-16
+### 修复
+- 修复语言服务器仍在建立索引时,刚打开文件的 CodeLens 计数来回闪烁(0 → N → 0 → N)的问题。此前有上限的重新解析每次重试都会清空整个解析缓存,迫使已正确的计数在索引期间重新查询并短暂跌回 0;现在重试只重新解析仍在等待的符号,已展示过的计数不会回退
+- 索引期间,尚未解析出的符号显示中性占位符"…",不再显示有误导性的"0 references";服务器响应后填入真实计数
+- 索引稳定后(所有等待中的符号都已解析),执行一次性校验刷新,基于完整索引重新解析全部缓存计数,将索引未建完时取到的不完整数值一次性修正为最终准确值
+
 ## [2.0.1] - 2026-07-11
 ### 修复
 - 修复 WSL/macOS 下左侧文件资源管理器快速闪动的问题。此前"无语言服务器兜底扫描"会对工作区每个 `.py` 文件、且每个符号都各扫一遍并打开文档；同时它在语言服务器(Pylance)仍在建立索引(引用查询会短暂返回空)时也会触发。现在仅在确实没有安装 Python 语言服务器时才扫描，改用 `fs.readFile` 读取字节而非打开文档，并在同一文件的多个符号间共享一次短时缓存的扫描
@@ -52,6 +58,7 @@
 
 ---
 
-[2.0.1]: https://github.com/maxim-lapan/python-reference-counter/compare/v2.0.0...v2.0.1
-[2.0.0]: https://github.com/maxim-lapan/python-reference-counter/compare/v1.0.0...v2.0.0
-[1.0.0]: https://github.com/maxim-lapan/python-reference-counter/releases/tag/v1.0.0
+[2.0.2]: https://github.com/mxlapan/python-reference-counter/compare/v2.0.1...v2.0.2
+[2.0.1]: https://github.com/mxlapan/python-reference-counter/compare/v2.0.0...v2.0.1
+[2.0.0]: https://github.com/mxlapan/python-reference-counter/compare/v1.0.0...v2.0.0
+[1.0.0]: https://github.com/mxlapan/python-reference-counter/releases/tag/v1.0.0
