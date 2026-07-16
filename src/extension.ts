@@ -63,12 +63,25 @@ export class PythonReferenceProvider implements vscode.CodeLensProvider {
   private static readonly MAX_SERVER_RETRIES = 8;
   private static readonly SERVER_RETRY_MS = 2000;
 
+  // Symbols whose resolve came back empty while the server was indexing
+  // (keyed by uri#line:char). Once the set drains — every symbol that was
+  // pending has since resolved — indexing is over, and one final verification
+  // refresh re-resolves everything so counts captured mid-indexing (which may
+  // have been partial) are corrected to their final, accurate values.
+  private readonly pendingWhileIndexing = new Set<string>();
+  private verifyTimer: ReturnType<typeof setTimeout> | undefined;
+  private verificationDone = false;
+  private static readonly VERIFY_DELAY_MS = 1500;
+
   /** Ask VS Code to re-resolve all CodeLenses (e.g. after a settings change). */
   public refresh(): void {
     this.resolveCache.clear();
     this.fileScanCache = null;
     this.retryAttempts = 0;
+    this.pendingWhileIndexing.clear();
+    this.verificationDone = false;
     if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = undefined; }
+    if (this.verifyTimer) { clearTimeout(this.verifyTimer); this.verifyTimer = undefined; }
     this._onDidChangeCodeLenses.fire();
   }
 
@@ -76,7 +89,9 @@ export class PythonReferenceProvider implements vscode.CodeLensProvider {
     this._onDidChangeCodeLenses.dispose();
     this.resolveCache.clear();
     this.fileScanCache = null;
+    this.pendingWhileIndexing.clear();
     if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = undefined; }
+    if (this.verifyTimer) { clearTimeout(this.verifyTimer); this.verifyTimer = undefined; }
   }
 
   // Schedule one bounded re-resolve. Genuinely zero-reference symbols never get
@@ -87,9 +102,29 @@ export class PythonReferenceProvider implements vscode.CodeLensProvider {
     this.retryTimer = setTimeout(() => {
       this.retryTimer = undefined;
       this.retryAttempts++;
-      this.resolveCache.clear();
+      // Do NOT clear the whole resolve cache here. Confident counts are cached
+      // and must stay put: re-resolving them risks catching the server on a
+      // transient empty response mid-indexing, which is exactly what made an
+      // already-shown count flicker back to 0. Pending symbols are never cached,
+      // so re-firing makes VS Code re-resolve only those. Counts cached from a
+      // possibly-partial index are corrected by the one-shot verification
+      // refresh once indexing settles (see scheduleVerificationRefresh).
       this._onDidChangeCodeLenses.fire();
     }, PythonReferenceProvider.SERVER_RETRY_MS);
+  }
+
+  // One-shot refresh fired shortly after the last indexing-pending symbol
+  // resolves. By then the server has a settled index, so re-resolving every
+  // cached count replaces any value captured from a partial index with the
+  // final accurate one — a single monotonic correction, not a flicker.
+  private scheduleVerificationRefresh(): void {
+    if (this.verificationDone || this.verifyTimer) { return; }
+    this.verifyTimer = setTimeout(() => {
+      this.verifyTimer = undefined;
+      this.verificationDone = true;
+      this.resolveCache.clear();
+      this._onDidChangeCodeLenses.fire();
+    }, PythonReferenceProvider.VERIFY_DELAY_MS);
   }
 
   public async provideCodeLenses(document: vscode.TextDocument, token: vscode.CancellationToken): Promise<vscode.CodeLens[]> {
@@ -309,11 +344,35 @@ export class PythonReferenceProvider implements vscode.CodeLensProvider {
         }
       }
 
-      // Server installed but nothing resolved yet → still indexing. Show a
-      // best-effort count now, but don't cache it, and schedule a bounded
-      // re-resolve so the number becomes accurate once indexing completes.
+      // Server installed but nothing resolved yet → still indexing. The empty
+      // result is not the real count, so instead of a misleading "0 references"
+      // show a neutral placeholder and schedule a bounded re-resolve; the number
+      // fills in once indexing completes. Deliberately left uncached so the
+      // retry can replace it (and so a confident count, once cached, never gets
+      // overwritten by a transient empty — which is what caused the flicker).
       const notReady = serverPresent && !languageServerResolved;
-      if (notReady) { this.scheduleServerRetry(); } else { this.retryAttempts = 0; }
+      const pendingKey = `${codeLens.uri.toString()}#${posKey}`;
+      if (notReady) {
+        // Once the retry budget is spent, stop showing the placeholder and fall
+        // through to a best-effort (still uncached) count so the lens is never
+        // stuck on "…" indefinitely.
+        if (this.retryAttempts < PythonReferenceProvider.MAX_SERVER_RETRIES) {
+          this.pendingWhileIndexing.add(pendingKey);
+          this.scheduleServerRetry();
+          codeLens.command = {
+            title: '…',
+            command: 'editor.action.showReferences',
+            arguments: [codeLens.uri, codeLens.range.start, []]
+          };
+          return codeLens;
+        }
+      } else if (this.pendingWhileIndexing.delete(pendingKey) && this.pendingWhileIndexing.size === 0) {
+        // The last symbol that was blocked on indexing has resolved — indexing
+        // is done. Reset the retry budget for future episodes and verify all
+        // cached counts against the now-complete index.
+        this.retryAttempts = 0;
+        this.scheduleVerificationRefresh();
+      }
 
       const count = refs.length;
       if (!showZero && count === 0) {

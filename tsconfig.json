@@ -6,6 +6,13 @@
 		"lib": [
 			"ES2022"
 		],
+		// Explicit so the editor's TS server loads Node globals (setTimeout,
+		// Buffer, ...) the same way the CLI build does. "mocha" covers the
+		// suite/test globals used in src/test.
+		"types": [
+			"node",
+			"mocha"
+		],
 		"sourceMap": true,
 		"rootDir": "src",
 		"strict": true,   /* enable all strict type-checking options */
